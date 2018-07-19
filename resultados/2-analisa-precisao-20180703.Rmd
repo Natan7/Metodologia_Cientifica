@@ -1,0 +1,117 @@
+---
+title: "Análise da precisão"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(here)
+library(modelr)
+library(broom)
+library(GGally)
+
+theme_set(theme_bw())
+```
+
+## Os dados
+
+```{r carrega}
+
+reclamacoes = read_csv(here("data/3-avaliacao-humana/reclamacoes-avaliadas-20180703.csv"))
+sentimentos = read_csv(here("data/5-sentimentos/sentimento.csv"))
+
+reclamacoes = reclamacoes %>% mutate(comprimento_reclamacao = str_length(reclamacao))
+```
+
+`reclamacoes_l` tem um formato long em vez de wide (explicado [aqui](https://sejdemyr.github.io/r-tutorials/basics/wide-and-long/)).
+
+```{r junta}
+reclamacoes = reclamacoes %>% 
+    left_join(sentimentos, by = "id")
+
+reclamacoes_l = reclamacoes %>%  
+    select(-palavras_op30, -palavras_sent, -grupo_avaliando) %>% 
+    gather(key = "lexico", 
+           value = "polaridade", 
+           sentimento_op30, sentimento_sent)
+
+reclamacoes_l %>% View()
+
+```
+
+Converte polaridades para escala 0-5
+
+```{r}
+# Faça você mesmo. Crie a variável polaridade_normalizada
+ reclamacoes_l = reclamacoes_l %>% 
+     group_by(lexico) %>% 
+     mutate(polaridade_normalizada = signif(scales::rescale(-polaridade,to=c(1, 5)), digits=1))
+```
+
+Calcula o erro (SSE) por reclamação
+
+```{r}
+
+reclamacoes_l = reclamacoes_l %>% 
+    mutate(erro = (insatisfacao - polaridade_normalizada)**2)
+```
+
+
+## EDA
+
+Inicial. Faça os gráficos a mais que achar necessário para entender os dados que temos de resultado. Lembrando de nossa questão: Quão eficazes são os métodos de análise de sentimento baseados em léxicos para estimar o nível de insatisfação de reclamações recebidas pelo reclameaqui do governo federal? Existe um exemplo de EDA no repositório. Uma decisão importante a ser usada é se vamos considerar as avaliações humanas onde houve muita discordância sobre o nível de insatisfação.
+
+###Como avaliar a eficácia dos métodos?  
+Uma medida interessante da eficiência desses métodos é calcular a soma dos erros ao quadrado (SSE) considerando o que o método definiu como a polaridade_normalizada e o que a avaliação humana definiu como a insatisfação.
+
+```{r}
+reclamacoes %>% 
+    ggplot(aes(x = sentimento_op30, y = sentimento_sent)) + 
+    geom_abline(slope = 1, intercept = 0, color = "grey") + 
+    geom_count(alpha = .7) 
+```
+
+```{r}
+reclamacoes_l %>% 
+    ggplot(aes(x = insatisfacao, y = polaridade_normalizada, group = insatisfacao)) + 
+    geom_abline(slope = 1, intercept = 0, color = "grey") + 
+    geom_jitter(alpha = .7)  + 
+    facet_wrap(~ lexico)
+
+reclamacoes_l %>% 
+    ggplot(aes(x = insatisfacao, y = erro, group = insatisfacao)) + 
+    geom_jitter(alpha = .5)  +
+    # geom_boxplot() + 
+    facet_wrap(~ lexico)
+```
+
+
+## Há relação entre o léxico e o erro?
+
+Agora um modelo para responder sua pergunta.
+
+```{r}
+#Cria variável dummy para preditor categórico
+reclamacoes_l = reclamacoes_l %>% mutate(lexico.dummy = if_else(lexico == "sentimento_sent", 1, 0))
+#Você precisa entender o que fez acima para interpretar sua regressão
+#Você pode também criar uma variável dummy para o órgao (se anac ou inss)
+
+ggpairs(reclamacoes_l %>% select(lexico.dummy, erro, comprimento_reclamacao, lexico))
+
+lm1 = lm(erro ~ lexico.dummy, data = reclamacoes_l)
+
+lm2 = lm(erro ~ lexico.dummy + palavras, data = reclamacoes_l)
+```
+
+Regressão foi utilizada para analisar se o léxico usado (lexico.dummy) tem uma associação significativa com o erro na estimativa de instatisfação da reclemação. Os resultados da regressão indicam que um modelo com o preditor no formato Erro = -0,1333.lexico.dummy explicam 0,06458% da variância da variável de resposta (R2 = 0,0006458). O lexico.dummy, medido como (0) sentimento_op30 e (1) semtimento_sent tem uma relação significativa com o erro (b = [-0,6162;  0,3496], IC com 95%). O lexico sent reduz em 0.1333 o erro na estimação da insatisfação (mais preciso) em relação ao op30, por tanto, a diferença entre usar um lexico ou outro é pequena.
+
+```{r}
+summary(lm1)
+```
+
+A fim de responder nossa segunda pergunta, utilizamos Regressão múltipla para analisar se o número de palavras influencia na precisão do lexico. Os resultados da regressão indicam um modelo com os 2 preditores no formato Erro = -0,1333.lexico.dummy - 0,001238.palavras explicam 0,4337% da variância da variável de resposta (R2 = 0,004337). O lexico.dummy, medido como (0) sentimento_op30 e (1) semtimento_sent tem uma relação significativa com o erro (b = [-0,6162;  0,3496], IC com 95%) e palavras, medido como a contágem de palavras existentes na reclamação também é significativo (b = [-0,003118; 0,000642], IC com 95%). O lexico sent reduz em 0.1333 o erro na estimação da insatisfação (mais preciso) em relação ao op30, já cada palavra na reclamação reduz em 0.001238 o erro, logo os algoritimos são mais indicados para reclamações grandes. 
+
+```{r}
+summary(lm2)
+```
+
